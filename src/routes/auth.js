@@ -135,14 +135,14 @@ router.post('/change-password', requireAuth, async (req, res) => {
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// ── POST /api/auth/google/callback ──────────────────────────────────────────
-router.post('/google/callback', async (req, res) => {
+// ── POST /api/auth/google ──────────────────────────────────────────────────
+router.post('/google', async (req, res) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: 'ID Token required' });
+    const { credential } = req.body;
+    if (!credential) return res.status(400).json({ error: 'Google credential required' });
 
     const ticket = await googleClient.verifyIdToken({
-      idToken,
+      idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
