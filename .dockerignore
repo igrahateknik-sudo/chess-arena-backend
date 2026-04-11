@@ -1,0 +1,20 @@
+# Sembunyikan file raksasa agar build lebih cepat
+node_modules
+.npm
+.cache
+.codeoss
+.config
+.docker
+.gsutil
+.terraform
+.vscode
+*.log
+.DS_Store
+.git
+.gitignore
+README.md
+terraform.tfstate*
+main.tf*
+package-lock.json
+tmp_arena_repo
+tmp_repo2
