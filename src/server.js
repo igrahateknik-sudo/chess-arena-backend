@@ -18,7 +18,7 @@ const server = http.createServer(app);
 
 const ALLOWED_ORIGINS = (
   process.env.ALLOWED_ORIGINS ||
-  'http://localhost:3000,https://chess-app-two-kappa.vercel.app'
+  'http://localhost:3000,https://chess-app-two-kappa.vercel.app,https://www.chess-arena.app,https://chess-arena.app'
 ).split(',').map(s => s.trim());
 
 // Setup Redis Adapter for Socket.io
