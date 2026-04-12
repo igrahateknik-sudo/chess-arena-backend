@@ -1,4 +1,4 @@
-import express, { Response } from 'express';
+import express, { Response, Request } from 'express';
 import bcrypt from 'bcryptjs';
 import { users } from '../lib/db';
 import { signToken } from '../lib/auth';
@@ -7,48 +7,46 @@ import { OAuth2Client } from 'google-auth-library';
 import logger from '../lib/logger';
 import { sendVerificationEmail, sendResetPasswordEmail } from '../lib/email';
 import crypto from 'crypto';
-import prisma from '../lib/prisma';
+import validate from '../middleware/validate';
+import { 
+  registerSchema, 
+  loginSchema, 
+  verifyCodeSchema, 
+  resendVerificationSchema, 
+  forgotPasswordSchema, 
+  resetPasswordSchema 
+} from '../lib/validators';
 
 const router = express.Router();
 
-// ── Google OAuth Client ──────────────────────────────────────────────────────
 const getGoogleClient = () => {
   return new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 };
 
 // ── POST /api/auth/register ──────────────────────────────────────────────────
-router.post('/register', async (req: express.Request, res: Response) => {
-  logger.info(`[Auth/Register] Attempt for email: ${req.body.email}`);
+router.post('/register', validate(registerSchema), async (req: Request, res: Response) => {
+  const { username, email, password } = req.body;
+  logger.info(`[Auth/Register] Attempt for email: ${email}`);
+
   try {
-    const { username, email, password } = req.body;
-
-    if (!username || !email || !password) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
-
     const existing = await users.findByEmail(email);
     if (existing) {
       logger.warn(`[Auth/Register] Email already exists: ${email}`);
       return res.status(400).json({ error: 'Email already exists' });
     }
 
-    // Token acak (digunakan untuk link DAN kode)
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await users.create({
       username,
       email,
-      passwordHash: passwordHash,
+      passwordHash,
     });
-    logger.info(`[Auth/Register] User created in DB: ${user.id}`);
 
     await users.update(user.id, { verify_token: verificationToken });
-    logger.info(`[Auth/Register] Token stored for user: ${user.id}`);
-
-    // Kirim Email (Link + Kode)
+    
     const emailSent = await sendVerificationEmail(email, verificationToken);
-
     const token = signToken({ userId: user.id });
     
     res.status(201).json({
@@ -62,17 +60,15 @@ router.post('/register', async (req: express.Request, res: Response) => {
   }
 });
 
-// ── GET /api/auth/verify-link (Verifikasi lewat Klik Link) ──────────────────
-router.get('/verify-link', async (req: express.Request, res: Response) => {
-  try {
-    const { token } = req.query;
-    if (!token || typeof token !== 'string') {
-      return res.status(400).send('<h1>Link Verifikasi Tidak Valid</h1>');
-    }
+// ── GET /api/auth/verify-link ───────────────────────────────────────────────
+router.get('/verify-link', async (req: Request, res: Response) => {
+  const { token } = req.query;
+  if (!token || typeof token !== 'string') {
+    return res.status(400).send('<h1>Link Verifikasi Tidak Valid</h1>');
+  }
 
-    const user = await prisma.user.findFirst({
-      where: { verify_token: token }
-    });
+  try {
+    const user = await users.findByVerifyToken(token);
 
     if (!user) {
       return res.status(400).send('<h1>Link Verifikasi Kadaluarsa atau Tidak Valid</h1>');
@@ -83,7 +79,6 @@ router.get('/verify-link', async (req: express.Request, res: Response) => {
       verify_token: null,
     });
 
-    // Redirect ke frontend (dashboard)
     const frontendUrl = process.env.APP_URL?.replace('/api/auth', '') || 'http://localhost:3000';
     res.send(`
       <div style="font-family: sans-serif; text-align: center; padding: 50px;">
@@ -98,18 +93,15 @@ router.get('/verify-link', async (req: express.Request, res: Response) => {
   }
 });
 
-// ── POST /api/auth/verify (Verifikasi lewat Input Kode) ────────────────────
-router.post('/verify', requireAuth, async (req: AuthRequest, res: Response) => {
+// ── POST /api/auth/verify (Input Kode) ─────────────────────────────────────
+router.post('/verify', requireAuth, validate(verifyCodeSchema), async (req: AuthRequest, res: Response) => {
+  const { code } = req.body;
+  const userId = req.userId!;
+
   try {
-    const { code } = req.body;
-    const userId = req.userId!;
-
-    if (!code) return res.status(400).json({ error: 'Verification code is required' });
-
     const user = await users.findById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Cek apakah 6 karakter pertama token cocok dengan kode yang diinput
     if (user.verify_token && user.verify_token.substring(0, 6).toUpperCase() === code.toUpperCase()) {
       await users.update(userId, {
         verified: true,
@@ -125,39 +117,11 @@ router.post('/verify', requireAuth, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// ── POST /api/auth/verify-email (Lama - untuk kompatibilitas frontend) ──────
-router.post('/verify-email', async (req: express.Request, res: Response) => {
-  try {
-    const { token } = req.body;
-    if (!token) return res.status(400).json({ error: 'Token is required' });
-
-    const user = await prisma.user.findFirst({
-      where: { verify_token: token }
-    });
-
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid or expired verification token' });
-    }
-
-    await users.update(user.id, {
-      verified: true,
-      verify_token: null,
-    });
-
-    res.json({ ok: true, message: 'Email verified successfully' });
-  } catch (err: any) {
-    logger.error(`[Auth/VerifyEmail] Error: ${err.message}`);
-    res.status(500).json({ error: 'Verification failed' });
-  }
-});
-
 // ── POST /api/auth/resend-verification ──────────────────────────────────────
-router.post('/resend-verification', async (req: express.Request, res: Response) => {
+router.post('/resend-verification', validate(resendVerificationSchema), async (req: Request, res: Response) => {
+  const { email } = req.body;
+  
   try {
-    const { email } = req.body;
-    logger.info(`[Auth/ResendVerif] Request for: ${email}`);
-    if (!email) return res.status(400).json({ error: 'Email is required' });
-
     const user = await users.findByEmail(email);
     if (!user) {
       return res.json({ ok: true, message: 'If the email exists, a new link has been sent.' });
@@ -169,13 +133,7 @@ router.post('/resend-verification', async (req: express.Request, res: Response) 
 
     const verificationToken = crypto.randomBytes(32).toString('hex');
     await users.update(user.id, { verify_token: verificationToken });
-    
-    const emailSent = await sendVerificationEmail(user.email, verificationToken);
-    if (!emailSent) {
-      logger.error(`[Auth/ResendVerif] Failed to send email to ${user.email}`);
-    } else {
-      logger.info(`[Auth/ResendVerif] Verification email resent to ${user.email}`);
-    }
+    await sendVerificationEmail(user.email, verificationToken);
     
     res.json({ ok: true, message: 'Verification link sent' });
   } catch (err: any) {
@@ -185,11 +143,10 @@ router.post('/resend-verification', async (req: express.Request, res: Response) 
 });
 
 // ── POST /api/auth/forgot-password ──────────────────────────────────────────
-router.post('/forgot-password', async (req: express.Request, res: Response) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email is required' });
+router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Request, res: Response) => {
+  const { email } = req.body;
 
+  try {
     const user = await users.findByEmail(email);
     if (!user) {
       return res.json({ ok: true, message: 'If the email exists, a reset link has been sent.' });
@@ -197,11 +154,7 @@ router.post('/forgot-password', async (req: express.Request, res: Response) => {
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     await users.update(user.id, { reset_token: resetToken });
-
-    const emailSent = await sendResetPasswordEmail(user.email, resetToken);
-    if (!emailSent) {
-      logger.error(`[Auth/ForgotPassword] Failed to send email to ${user.email}`);
-    }
+    await sendResetPasswordEmail(user.email, resetToken);
     
     res.json({ ok: true, message: 'Password reset link sent' });
   } catch (err: any) {
@@ -211,14 +164,11 @@ router.post('/forgot-password', async (req: express.Request, res: Response) => {
 });
 
 // ── POST /api/auth/reset-password ───────────────────────────────────────────
-router.post('/reset-password', async (req: express.Request, res: Response) => {
-  try {
-    const { token, password } = req.body;
-    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+router.post('/reset-password', validate(resetPasswordSchema), async (req: Request, res: Response) => {
+  const { token, password } = req.body;
 
-    const user = await prisma.user.findFirst({
-      where: { reset_token: token }
-    });
+  try {
+    const user = await users.findByResetToken(token);
 
     if (!user) {
       return res.status(400).json({ error: 'Invalid or expired reset token' });
@@ -238,11 +188,11 @@ router.post('/reset-password', async (req: express.Request, res: Response) => {
 });
 
 // ── POST /api/auth/login ─────────────────────────────────────────────────────
-router.post('/login', async (req: express.Request, res: Response) => {
-  try {
-    const { email, password } = req.body;
-    const user = await users.findByEmail(email);
+router.post('/login', validate(loginSchema), async (req: Request, res: Response) => {
+  const { email, password } = req.body;
 
+  try {
+    const user = await users.findByEmail(email);
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -261,7 +211,7 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response) => {
 });
 
 // ── POST /api/auth/guest ─────────────────────────────────────────────────────
-router.post('/guest', async (_req: express.Request, res: Response) => {
+router.post('/guest', async (_req: Request, res: Response) => {
   try {
     const guestId = Math.random().toString(36).substring(7);
     const user = await users.create({
@@ -279,14 +229,14 @@ router.post('/guest', async (_req: express.Request, res: Response) => {
 });
 
 // ── POST /api/auth/google ────────────────────────────────────────────────────
-router.post('/google', async (req: express.Request, res: Response) => {
+router.post('/google', async (req: Request, res: Response) => {
+  const token = req.body.token || req.body.credential || req.body.idToken || req.body.id_token;
+
+  if (!token) {
+    return res.status(400).json({ error: 'Google token is required' });
+  }
+
   try {
-    const token = req.body.token || req.body.credential || req.body.idToken || req.body.id_token;
-
-    if (!token) {
-      return res.status(400).json({ error: 'Google token is required' });
-    }
-
     const client = getGoogleClient();
     const ticket = await client.verifyIdToken({
       idToken: token,

@@ -1,9 +1,22 @@
 import express, { Response } from 'express';
 import { requireAdmin } from '../middleware/adminAuth';
-import prisma from '../lib/prisma';
+import { 
+  users, 
+  antiCheatActions, 
+  collusionFlags, 
+  multiAccountFlags, 
+  appeals 
+} from '../lib/db';
 import { logAnticheatAction } from '../lib/auditLog';
 import { checkQueueHealth } from '../lib/monitor';
 import { AuthRequest } from '../middleware/auth';
+import validate from '../middleware/validate';
+import { 
+  adminListSchema, 
+  adminReviewUserSchema, 
+  adminReviewFlagSchema, 
+  adminReviewAppealSchema 
+} from '../lib/validators';
 
 const router = express.Router();
 
@@ -13,24 +26,8 @@ router.use(requireAdmin);
 // ── GET /api/admin/stats ─────────────────────────────────────────────────
 router.get('/stats', async (_req: AuthRequest, res: Response) => {
   try {
-    const totalUsers = await prisma.user.count();
-    const activeGames24h = await prisma.game.count({
-      where: {
-        started_at: { gte: new Date(Date.now() - 24 * 3600000) },
-      },
-    });
-    const recentSuspends7d = await prisma.antiCheatAction.count({
-      where: {
-        action: 'suspend',
-        created_at: { gte: new Date(Date.now() - 7 * 24 * 3600000) },
-      },
-    });
-
-    res.json({
-      totalUsers,
-      activeGames24h,
-      recentSuspends7d,
-    });
+    const stats = await users.getAdminStats();
+    res.json(stats);
   } catch (err) {
     console.error('[admin/stats]', err);
     res.status(500).json({ error: 'Failed to load stats' });
@@ -38,49 +35,11 @@ router.get('/stats', async (_req: AuthRequest, res: Response) => {
 });
 
 // ── GET /api/admin/users ──────────────────────────────────────────────────
-router.get('/users', async (req: AuthRequest, res: Response) => {
+router.get('/users', validate(adminListSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const limit = Math.min(100, parseInt((req.query.limit as string) || '50'));
-    const offset = parseInt((req.query.offset as string) || '0');
-    const search = req.query.search as string;
-
-    const usersList = await prisma.user.findMany({
-      where: search
-        ? {
-            OR: [
-              { username: { contains: search, mode: 'insensitive' } },
-              { email: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {},
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        elo: true,
-        trust_score: true,
-        flagged: true,
-        flagged_at: true,
-        last_ip: true,
-        created_at: true,
-      },
-      orderBy: { created_at: 'desc' },
-      take: limit,
-      skip: offset,
-    });
-
-    const total = await prisma.user.count({
-      where: search
-        ? {
-            OR: [
-              { username: { contains: search, mode: 'insensitive' } },
-              { email: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {},
-    });
-
-    res.json({ users: usersList, total });
+    const { limit, offset, search } = req.body; // Dari Zod preprocess/parse
+    const result = await users.listForAdmin(limit, offset, search);
+    res.json(result);
   } catch (err) {
     console.error('[admin/users]', err);
     res.status(500).json({ error: 'Failed to load users' });
@@ -91,27 +50,13 @@ router.get('/users', async (req: AuthRequest, res: Response) => {
 router.get('/users/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const user = await prisma.user.findUnique({
-      where: { id: id as string },
-      include: {
-        _count: {
-          select: {
-            white_games: true,
-            black_games: true,
-            appeals: true,
-          },
-        },
-      },
-    });
+    const userDetail = await users.getDetailForAdmin(id);
 
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!userDetail) return res.status(404).json({ error: 'User not found' });
 
-    const actions = await prisma.antiCheatAction.findMany({
-      where: { user_id: id as string },
-      orderBy: { created_at: 'desc' },
-    });
+    const actions = await antiCheatActions.getByUserId(id);
 
-    res.json({ user, actions });
+    res.json({ user: userDetail, actions });
   } catch (err) {
     console.error('[admin/users/detail]', err);
     res.status(500).json({ error: 'Failed to load user detail' });
@@ -119,25 +64,18 @@ router.get('/users/:id', async (req: AuthRequest, res: Response) => {
 });
 
 // ── POST /api/admin/users/:id/review ─────────────────────────────────────
-router.post('/users/:id/review', async (req: AuthRequest, res: Response) => {
+router.post('/users/:id/review', validate(adminReviewUserSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { action, reason, score, flags } = req.body;
 
-    if (!['warn', 'suspend', 'none'].includes(action)) {
-      return res.status(400).json({ error: 'Invalid action' });
-    }
-
     if (action === 'suspend') {
-      await prisma.user.update({
-        where: { id: id as string },
-        data: { flagged: true, flagged_at: new Date() },
-      });
+      await users.update(id, { flagged: true, flagged_at: new Date() });
     }
 
     // Log the anti-cheat action
     await logAnticheatAction({
-      userId: id as string,
+      userId: id,
       gameId: null,
       action,
       reason,
@@ -153,38 +91,11 @@ router.post('/users/:id/review', async (req: AuthRequest, res: Response) => {
 });
 
 // ── GET /api/admin/anticheat-actions ─────────────────────────────────────
-router.get('/anticheat-actions', async (req: AuthRequest, res: Response) => {
+router.get('/anticheat-actions', validate(adminListSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const limit = Math.min(100, parseInt((req.query.limit as string) || '50'));
-    const action = req.query.action as string;
-
-    const actions = await prisma.antiCheatAction.findMany({
-      where: action ? { action } : {},
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            elo: true,
-            trust_score: true,
-          },
-        },
-      },
-      orderBy: { created_at: 'desc' },
-      take: limit,
-    });
-
-    const formattedActions = actions.map((r) => ({
-      id: r.id,
-      action: r.action,
-      reason: r.reason,
-      flags: r.flags,
-      score: r.score,
-      created_at: r.created_at,
-      users: r.user,
-    }));
-
-    res.json({ actions: formattedActions });
+    const { limit, action } = req.body;
+    const actions = await antiCheatActions.list(limit, action);
+    res.json({ actions });
   } catch (err) {
     console.error('[admin/anticheat-actions]', err);
     res.status(500).json({ error: 'Failed to load actions' });
@@ -194,23 +105,8 @@ router.get('/anticheat-actions', async (req: AuthRequest, res: Response) => {
 // ── GET /api/admin/collusion-flags ───────────────────────────────────────
 router.get('/collusion-flags', async (_req: AuthRequest, res: Response) => {
   try {
-    const flags = await prisma.collusionFlag.findMany({
-      where: { reviewed: false },
-      include: {
-        user_a: { select: { id: true, username: true, elo: true } },
-        user_b: { select: { id: true, username: true, elo: true } },
-      },
-      orderBy: { detected_at: 'desc' },
-      take: 50,
-    });
-
-    const formattedFlags = flags.map((r) => ({
-      ...r,
-      userA: r.user_a,
-      userB: r.user_b,
-    }));
-
-    res.json({ flags: formattedFlags });
+    const flags = await collusionFlags.listPending();
+    res.json({ flags });
   } catch (err) {
     console.error('[admin/collusion-flags]', err);
     res.status(500).json({ error: 'Failed to load collusion flags' });
@@ -218,26 +114,12 @@ router.get('/collusion-flags', async (_req: AuthRequest, res: Response) => {
 });
 
 // ── POST /api/admin/collusion-flags/:id/review ───────────────────────────
-router.post('/collusion-flags/:id/review', async (req: AuthRequest, res: Response) => {
+router.post('/collusion-flags/:id/review', validate(adminReviewFlagSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { verdict, note } = req.body;
 
-    if (!['confirmed', 'dismissed'].includes(verdict)) {
-      return res.status(400).json({ error: 'verdict must be confirmed or dismissed' });
-    }
-
-    await prisma.collusionFlag.update({
-      where: { id: id as string },
-      data: {
-        reviewed: true,
-        verdict,
-        review_note: note,
-        reviewed_at: new Date(),
-        reviewed_by: req.userId,
-      },
-    });
-
+    await collusionFlags.review(id, verdict, note, req.userId!);
     res.json({ ok: true });
   } catch (err) {
     console.error('[admin/collusion/review]', err);
@@ -248,23 +130,8 @@ router.post('/collusion-flags/:id/review', async (req: AuthRequest, res: Respons
 // ── GET /api/admin/multi-account-flags ───────────────────────────────────
 router.get('/multi-account-flags', async (_req: AuthRequest, res: Response) => {
   try {
-    const flags = await prisma.multiAccountFlag.findMany({
-      where: { reviewed: false },
-      include: {
-        user_a: { select: { id: true, username: true, email: true } },
-        user_b: { select: { id: true, username: true, email: true } },
-      },
-      orderBy: { detected_at: 'desc' },
-      take: 50,
-    });
-
-    const formattedFlags = flags.map((r) => ({
-      ...r,
-      userA: r.user_a,
-      userB: r.user_b,
-    }));
-
-    res.json({ flags: formattedFlags });
+    const flags = await multiAccountFlags.listPending();
+    res.json({ flags });
   } catch (err) {
     console.error('[admin/multi-account-flags]', err);
     res.status(500).json({ error: 'Failed to load multi-account flags' });
@@ -272,26 +139,12 @@ router.get('/multi-account-flags', async (_req: AuthRequest, res: Response) => {
 });
 
 // ── POST /api/admin/multi-account-flags/:id/review ────────────────────────
-router.post('/multi-account-flags/:id/review', async (req: AuthRequest, res: Response) => {
+router.post('/multi-account-flags/:id/review', validate(adminReviewFlagSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { verdict, note } = req.body;
 
-    if (!['confirmed', 'dismissed'].includes(verdict)) {
-      return res.status(400).json({ error: 'verdict must be confirmed or dismissed' });
-    }
-
-    await prisma.multiAccountFlag.update({
-      where: { id: id as string },
-      data: {
-        reviewed: true,
-        verdict,
-        review_note: note,
-        reviewed_at: new Date(),
-        reviewed_by: req.userId,
-      },
-    });
-
+    await multiAccountFlags.review(id, verdict, note, req.userId!);
     res.json({ ok: true });
   } catch (err) {
     console.error('[admin/multi-account/review]', err);
@@ -300,18 +153,11 @@ router.post('/multi-account-flags/:id/review', async (req: AuthRequest, res: Res
 });
 
 // ── GET /api/admin/appeals ────────────────────────────────────────────────
-router.get('/appeals', async (req: AuthRequest, res: Response) => {
+router.get('/appeals', validate(adminListSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const status = (req.query.status as string) || 'pending';
-    const appeals = await prisma.appeal.findMany({
-      where: { status: status as any },
-      include: {
-        user: { select: { id: true, username: true, elo: true, flagged: true } },
-      },
-      orderBy: { created_at: 'desc' },
-    });
-
-    res.json({ appeals });
+    const { status } = req.body;
+    const list = await appeals.list(status || 'pending');
+    res.json({ appeals: list });
   } catch (err) {
     console.error('[admin/appeals]', err);
     res.status(500).json({ error: 'Failed to load appeals' });
@@ -319,37 +165,12 @@ router.get('/appeals', async (req: AuthRequest, res: Response) => {
 });
 
 // ── POST /api/admin/appeals/:id/review ────────────────────────────────────
-router.post('/appeals/:id/review', async (req: AuthRequest, res: Response) => {
+router.post('/appeals/:id/review', validate(adminReviewAppealSchema), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { verdict, admin_note } = req.body;
 
-    if (!['accepted', 'rejected'].includes(verdict)) {
-      return res.status(400).json({ error: 'verdict must be accepted or rejected' });
-    }
-
-    const appeal = await prisma.appeal.findUnique({ where: { id: id as string } });
-    if (!appeal) return res.status(404).json({ error: 'Appeal not found' });
-
-    await prisma.$transaction(async (tx) => {
-      await tx.appeal.update({
-        where: { id: id as string },
-        data: {
-          status: verdict as any,
-          admin_note,
-          reviewed_at: new Date(),
-          reviewed_by: req.userId,
-        },
-      });
-
-      if (verdict === 'accepted') {
-        await tx.user.update({
-          where: { id: appeal.user_id },
-          data: { flagged: false, flagged_at: null },
-        });
-      }
-    });
-
+    await appeals.review(id, verdict, admin_note, req.userId!);
     res.json({ ok: true, verdict });
   } catch (err) {
     console.error('[admin/appeal/review]', err);

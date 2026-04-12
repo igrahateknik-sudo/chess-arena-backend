@@ -1,3 +1,4 @@
+import { Prisma, User } from '@prisma/client';
 import prisma from './prisma';
 
 // ── Users ─────────────────────────────────────────────────────────────────
@@ -48,7 +49,19 @@ export const users = {
     });
   },
 
-  async update(id: string, updates: any) {
+  async findByVerifyToken(token: string) {
+    return await prisma.user.findFirst({
+      where: { verify_token: token },
+    });
+  },
+
+  async findByResetToken(token: string) {
+    return await prisma.user.findFirst({
+      where: { reset_token: token },
+    });
+  },
+
+  async update(id: string, updates: Prisma.UserUpdateInput) {
     return await prisma.user.update({
       where: { id },
       data: {
@@ -96,7 +109,75 @@ export const users = {
     });
   },
 
-  public(user: any) {
+  // Admin: Get dashboard stats
+  async getAdminStats() {
+    const totalUsers = await prisma.user.count();
+    const activeGames24h = await prisma.game.count({
+      where: {
+        started_at: { gte: new Date(Date.now() - 24 * 3600000) },
+      },
+    });
+    const recentSuspends7d = await prisma.antiCheatAction.count({
+      where: {
+        action: 'suspend',
+        created_at: { gte: new Date(Date.now() - 7 * 24 * 3600000) },
+      },
+    });
+    return { totalUsers, activeGames24h, recentSuspends7d };
+  },
+
+  // Admin: List users with pagination and search
+  async listForAdmin(limit: number, offset: number, search?: string) {
+    const where = search
+      ? {
+          OR: [
+            { username: { contains: search, mode: 'insensitive' } },
+            { email: { contains: search, mode: 'insensitive' } },
+          ],
+        }
+      : {};
+
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          elo: true,
+          trust_score: true,
+          flagged: true,
+          flagged_at: true,
+          last_ip: true,
+          created_at: true,
+        },
+        orderBy: { created_at: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    return { users, total };
+  },
+
+  // Admin: Get user detail
+  async getDetailForAdmin(id: string) {
+    return await prisma.user.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: {
+            white_games: true,
+            black_games: true,
+            appeals: true,
+          },
+        },
+      },
+    });
+  },
+
+  public(user: User | null) {
     if (!user) return null;
     const { password_hash: _, verify_token: __, reset_token: ___, ...pub } = user;
     return pub;
@@ -156,13 +237,13 @@ export const wallets = {
 
 // ── Transactions ──────────────────────────────────────────
 export const transactions = {
-  async create(data: any) {
+  async create(data: Prisma.TransactionCreateInput) {
     return await prisma.transaction.create({
       data,
     });
   },
 
-  async update(id: string, updates: any) {
+  async update(id: string, updates: Prisma.TransactionUpdateInput) {
     return await prisma.transaction.update({
       where: { id },
       data: {
@@ -173,7 +254,6 @@ export const transactions = {
   },
 
   async findByOrderId(orderId: string) {
-    // midtrans_order_id digunakan sebagai field umum untuk orderId (iPaymu/Midtrans)
     return await prisma.transaction.findUnique({
       where: { midtrans_order_id: orderId },
     });
@@ -190,7 +270,7 @@ export const transactions = {
 
 // ── Games ─────────────────────────────────────────────────────────────────
 export const games = {
-  async create(data: any) {
+  async create(data: Prisma.GameCreateInput) {
     return await prisma.game.create({
       data,
     });
@@ -202,7 +282,7 @@ export const games = {
     });
   },
 
-  async update(id: string, updates: any) {
+  async update(id: string, updates: Prisma.GameUpdateInput) {
     return await prisma.game.update({
       where: { id },
       data: updates,
@@ -240,7 +320,7 @@ export const games = {
 
 // ── Notifications ─────────────────────────────────────────
 export const notifications = {
-  async create(userId: string, type: string, title: string, body: string, data: any = {}) {
+  async create(userId: string, type: string, title: string, body: string, data: Prisma.InputJsonValue = {}) {
     await prisma.notification.create({
       data: {
         user_id: userId,
@@ -293,7 +373,7 @@ export const eloHistory = {
 
 // ── Appeals ───────────────────────────────────────────────
 export const appeals = {
-  async create(data: any) {
+  async create(data: Prisma.AppealCreateInput) {
     return await prisma.appeal.create({
       data,
     });
@@ -324,13 +404,47 @@ export const appeals = {
     });
   },
 
-  async update(id: string, updates: any) {
+  async update(id: string, updates: Prisma.AppealUpdateInput) {
     return await prisma.appeal.update({
       where: { id },
       data: {
         ...updates,
         reviewed_at: new Date(),
       },
+    });
+  },
+
+  async list(status: string) {
+    return await prisma.appeal.findMany({
+      where: { status: status as any },
+      include: {
+        user: { select: { id: true, username: true, elo: true, flagged: true } },
+      },
+      orderBy: { created_at: 'desc' },
+    });
+  },
+
+  async review(id: string, verdict: string, adminNote: string, adminId: string) {
+    const appeal = await prisma.appeal.findUnique({ where: { id } });
+    if (!appeal) throw new Error('Appeal not found');
+
+    return await prisma.$transaction(async (tx) => {
+      await tx.appeal.update({
+        where: { id },
+        data: {
+          status: verdict as any,
+          admin_note: adminNote,
+          reviewed_at: new Date(),
+          reviewed_by: adminId,
+        },
+      });
+
+      if (verdict === 'accepted') {
+        await tx.user.update({
+          where: { id: appeal.user_id },
+          data: { flagged: false, flagged_at: null },
+        });
+      }
     });
   },
 };
@@ -350,7 +464,7 @@ export const tournaments = {
     });
   },
 
-  async create(data: any) {
+  async create(data: Prisma.TournamentCreateInput) {
     return await prisma.tournament.create({
       data,
     });
@@ -373,7 +487,7 @@ export const tournaments = {
     });
   },
 
-  async registerPlayer(data: any) {
+  async registerPlayer(data: Prisma.TournamentRegistrationCreateInput) {
     return await prisma.tournamentRegistration.create({
       data,
     });
@@ -398,20 +512,120 @@ export const tournaments = {
   },
 };
 
+// ── Anti-Cheat Actions ─────────────────────────────────────
+export const antiCheatActions = {
+  async list(limit: number, action?: string) {
+    const actions = await prisma.antiCheatAction.findMany({
+      where: action ? { action } : {},
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            elo: true,
+            trust_score: true,
+          },
+        },
+      },
+      orderBy: { created_at: 'desc' },
+      take: limit,
+    });
+
+    return actions.map((r) => ({
+      id: r.id,
+      action: r.action,
+      reason: r.reason,
+      flags: r.flags,
+      score: r.score,
+      created_at: r.created_at,
+      users: r.user,
+    }));
+  },
+
+  async getByUserId(userId: string) {
+    return await prisma.antiCheatAction.findMany({
+      where: { user_id: userId },
+      orderBy: { created_at: 'desc' },
+    });
+  },
+};
+
 // ── Collusion Flags ───────────────────────────────────────
 export const collusionFlags = {
-  async create(data: any) {
+  async create(data: Prisma.CollusionFlagCreateInput) {
     return await prisma.collusionFlag.create({
       data,
+    });
+  },
+
+  async listPending() {
+    const flags = await prisma.collusionFlag.findMany({
+      where: { reviewed: false },
+      include: {
+        user_a: { select: { id: true, username: true, elo: true } },
+        user_b: { select: { id: true, username: true, elo: true } },
+      },
+      orderBy: { detected_at: 'desc' },
+      take: 50,
+    });
+
+    return flags.map((r) => ({
+      ...r,
+      userA: r.user_a,
+      userB: r.user_b,
+    }));
+  },
+
+  async review(id: string, verdict: string, note: string, adminId: string) {
+    return await prisma.collusionFlag.update({
+      where: { id },
+      data: {
+        reviewed: true,
+        verdict,
+        review_note: note,
+        reviewed_at: new Date(),
+        reviewed_by: adminId,
+      },
     });
   },
 };
 
 // ── Multi-Account Flags ───────────────────────────────────
 export const multiAccountFlags = {
-  async create(data: any) {
+  async create(data: Prisma.MultiAccountFlagCreateInput) {
     return await prisma.multiAccountFlag.create({
       data,
+    });
+  },
+
+  async listPending() {
+    const flags = await prisma.multiAccountFlag.findMany({
+      where: { reviewed: false },
+      include: {
+        user_a: { select: { id: true, username: true, email: true } },
+        user_b: { select: { id: true, username: true, email: true } },
+      },
+      orderBy: { detected_at: 'desc' },
+      take: 50,
+    });
+
+    return flags.map((r) => ({
+      ...r,
+      userA: r.user_a,
+      userB: r.user_b,
+    }));
+  },
+
+  async review(id: string, verdict: string, note: string, adminId: string) {
+    return await prisma.multiAccountFlag.update({
+      where: { id },
+      data: {
+        reviewed: true,
+        verdict,
+        review_note: note,
+        reviewed_at: new Date(),
+        reviewed_by: adminId,
+      },
     });
   },
 };

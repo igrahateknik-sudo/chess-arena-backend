@@ -97,6 +97,7 @@ function useCountdown(targetIso: string | null | undefined) {
   useEffect(() => {
     if (!targetIso) { setCountdown(''); return; }
     function calc() {
+      if (!targetIso) return;
       const diff = new Date(targetIso).getTime() - Date.now();
       if (diff <= 0) { setCountdown('Sebentar lagi'); return; }
       const h = Math.floor(diff / 3_600_000);
@@ -432,7 +433,9 @@ export default function TournamentDetailPage() {
                             <div className="text-[10px] text-[var(--text-muted)]">ELO</div>
                           </div>
                           {p.paid && (
-                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" title="Tiket lunas" />
+                            <span title="Tiket lunas" className="flex flex-shrink-0">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            </span>
                           )}
                         </motion.div>
                       );

@@ -1,60 +1,68 @@
-// src/lib/validators.ts
 import { z } from 'zod';
 
+// ── Auth Schemas ──────────────────────────────────────────────────────────
 export const registerSchema = z.object({
-  username: z
-    .string()
-    .min(3, 'Username must be at least 3 characters')
-    .max(30, 'Username must be at most 30 characters')
-    .regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores'),
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  username: z.string().min(3).max(30).regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores'),
+  email: z.string().email(),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
-export const loginSchema = z
-  .object({
-    email: z.string().email('Invalid email address').optional(),
-    username: z.string().optional(),
-    password: z.string().min(1, 'Password is required'),
-  })
-  .refine((data) => data.email || data.username, {
-    message: 'Either email or username must be provided',
-    path: ['email', 'username'],
-  });
-
-export const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1, 'Current password is required'),
-  newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+export const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string(),
 });
 
-export const profileUpdateSchema = z.object({
-  country: z.string().optional(),
-  avatar_url: z.string().url('Invalid avatar URL').optional(),
+export const verifyCodeSchema = z.object({
+  code: z.string().length(6, 'Verification code must be 6 characters'),
 });
 
-export const depositSchema = z.object({
-  amount: z
-    .number()
-    .min(10000, 'Minimum deposit is Rp 10,000')
-    .max(100000000, 'Maximum deposit is Rp 100,000,000'),
-});
-
-export const withdrawSchema = z.object({
-  amount: z.number().min(50000, 'Minimum withdrawal is Rp 50,000'),
-  bankCode: z.string().min(1, 'Bank code is required'),
-  accountNumber: z.string().min(5, 'Invalid account number'),
-  accountName: z.string().min(2, 'Account name is required'),
-});
-
-export const verifyEmailSchema = z.object({
-  token: z.string().min(1, 'Token is required'),
+export const resendVerificationSchema = z.object({
+  email: z.string().email(),
 });
 
 export const forgotPasswordSchema = z.object({
-  email: z.string().email('Invalid email address'),
+  email: z.string().email(),
 });
 
 export const resetPasswordSchema = z.object({
-  token: z.string().min(1, 'Token is required'),
-  newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+  token: z.string(),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+// ── Common Schemas ────────────────────────────────────────────────────────
+export const paginationSchema = z.object({
+  limit: z.preprocess((val) => parseInt(val as string, 10), z.number().min(1).max(100).default(50)),
+  offset: z.preprocess((val) => parseInt(val as string, 10), z.number().min(0).default(0)),
+  search: z.string().optional(),
+});
+
+// ── Admin Schemas ─────────────────────────────────────────────────────────
+export const adminReviewUserSchema = z.object({
+  action: z.enum(['warn', 'suspend', 'none']),
+  reason: z.string().min(1, 'Reason is required'),
+  score: z.number().optional(),
+  flags: z.array(z.string()).optional(),
+});
+
+export const adminReviewFlagSchema = z.object({
+  verdict: z.enum(['confirmed', 'dismissed']),
+  note: z.string().optional(),
+});
+
+export const adminReviewAppealSchema = z.object({
+  verdict: z.enum(['accepted', 'rejected']),
+  admin_note: z.string().optional(),
+});
+
+export const adminListSchema = z.object({
+  limit: z.preprocess((val) => parseInt(val as string, 10), z.number().min(1).max(100).default(50)),
+  offset: z.preprocess((val) => parseInt(val as string, 10), z.number().min(0).default(0)),
+  search: z.string().optional(),
+  status: z.string().optional(),
+  action: z.string().optional(),
+});
+
+// ── Game Schemas ──────────────────────────────────────────────────────────
+export const gameListSchema = z.object({
+  limit: z.preprocess((val) => parseInt(val as string, 10), z.number().min(1).max(100).default(20)),
 });

@@ -1,13 +1,15 @@
-import express, { Response } from 'express';
+import express, { Response, Request } from 'express';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { games, eloHistory } from '../lib/db';
+import validate from '../middleware/validate';
+import { gameListSchema } from '../lib/validators';
 
 const router = express.Router();
 
 // ── GET /api/game/:gameId ────────────────────────────────────────────────────
 router.get('/:gameId', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const game = await games.findById(req.params.gameId as string);
+    const game = await games.findById(req.params.gameId);
     if (!game) return res.status(404).json({ error: 'Game not found' });
 
     if (game.white_id !== req.userId && game.black_id !== req.userId) {
@@ -22,10 +24,10 @@ router.get('/:gameId', requireAuth, async (req: AuthRequest, res: Response) => {
 });
 
 // ── GET /api/game/history/:userId ────────────────────────────────────────────
-router.get('/history/:userId', requireAuth, async (req: AuthRequest, res: Response) => {
+router.get('/history/:userId', requireAuth, validate(gameListSchema), async (req: AuthRequest, res: Response) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-    const history = await games.getHistory(req.params.userId as string, limit);
+    const { limit } = req.body;
+    const history = await games.getHistory(req.params.userId, limit);
     res.json({ history });
   } catch (err) {
     console.error('[game/history/:userId]', err);
@@ -34,10 +36,10 @@ router.get('/history/:userId', requireAuth, async (req: AuthRequest, res: Respon
 });
 
 // ── GET /api/game/elo/:userId ────────────────────────────────────────────────
-router.get('/elo/:userId', async (req: express.Request, res: Response) => {
+router.get('/elo/:userId', validate(gameListSchema), async (req: Request, res: Response) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const history = await eloHistory.getForUser(req.params.userId as string, limit);
+    const { limit } = req.body;
+    const history = await eloHistory.getForUser(req.params.userId, limit);
     res.json({ history });
   } catch (err) {
     console.error('[game/elo/:userId]', err);
