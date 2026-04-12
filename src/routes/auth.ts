@@ -36,17 +36,20 @@ router.post('/register', async (req: express.Request, res: Response) => {
       passwordHash: passwordHash,
     });
 
-    // Simpan OTP ke database (verify_token)
-    await users.update(user.id, { verify_token: otp });
+    // OTOMATIS VERIFIKASI (Solusi tanpa SMTP)
+    await users.update(user.id, { 
+      verified: true,
+      verify_token: null 
+    });
 
-    // Kirim Email (Jangan biarkan error email membatalkan registrasi, tapi catat)
-    const emailSent = await sendVerificationEmail(email, otp);
+    // Coba kirim email di background, tapi jangan tunggu hasilnya
+    sendVerificationEmail(email, otp).catch(err => logger.error(`[Email-Silent-Fail] ${err.message}`));
 
     const token = signToken({ userId: user.id });
     res.status(201).json({
-      user,
+      user: { ...user, verified: true },
       token,
-      message: emailSent ? 'Verification email sent' : 'Account created, but failed to send email',
+      message: 'Account created and automatically verified!',
     });
   } catch (err: any) {
     logger.error(`[Auth/Register] Error: ${err.message}`);
