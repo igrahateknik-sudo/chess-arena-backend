@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.chessarena.app",
+    "sha256_cert_fingerprints": [
+      "B6:43:F5:E2:31:14:18:1A:04:FF:9E:E5:91:1D:14:24:16:10:D7:27:1F:D6:7E:96:F6:71:21:67:64:EF:5A:18"
+    ]
+  }
+}]

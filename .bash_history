@@ -94,3 +94,11 @@ npm test
 npm run lint
 npx tsc --noEmit
 npm run build
+npm run dev
+fuser -k 8080/tcp 
+gemini
+gemini
+npx ts-node src/scripts/test-email.ts 
+npm run dev
+claude
+gemini

@@ -5,7 +5,9 @@ import { signToken } from '../lib/auth';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { OAuth2Client } from 'google-auth-library';
 import logger from '../lib/logger';
-import { sendVerificationEmail } from '../lib/email';
+import { sendVerificationEmail, sendResetPasswordEmail } from '../lib/email';
+import crypto from 'crypto';
+import prisma from '../lib/prisma';
 
 const router = express.Router();
 
@@ -16,6 +18,7 @@ const getGoogleClient = () => {
 
 // ── POST /api/auth/register ──────────────────────────────────────────────────
 router.post('/register', async (req: express.Request, res: Response) => {
+  logger.info(`[Auth/Register] Attempt for email: ${req.body.email}`);
   try {
     const { username, email, password } = req.body;
 
@@ -24,10 +27,13 @@ router.post('/register', async (req: express.Request, res: Response) => {
     }
 
     const existing = await users.findByEmail(email);
-    if (existing) return res.status(400).json({ error: 'Email already exists' });
+    if (existing) {
+      logger.warn(`[Auth/Register] Email already exists: ${email}`);
+      return res.status(400).json({ error: 'Email already exists' });
+    }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Token acak (digunakan untuk link DAN kode)
+    const verificationToken = crypto.randomBytes(32).toString('hex');
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await users.create({
@@ -35,29 +41,64 @@ router.post('/register', async (req: express.Request, res: Response) => {
       email,
       passwordHash: passwordHash,
     });
+    logger.info(`[Auth/Register] User created in DB: ${user.id}`);
 
-    // OTOMATIS VERIFIKASI (Solusi tanpa SMTP)
-    await users.update(user.id, { 
-      verified: true,
-      verify_token: null 
-    });
+    await users.update(user.id, { verify_token: verificationToken });
+    logger.info(`[Auth/Register] Token stored for user: ${user.id}`);
 
-    // Coba kirim email di background, tapi jangan tunggu hasilnya
-    sendVerificationEmail(email, otp).catch(err => logger.error(`[Email-Silent-Fail] ${err.message}`));
+    // Kirim Email (Link + Kode)
+    const emailSent = await sendVerificationEmail(email, verificationToken);
 
     const token = signToken({ userId: user.id });
+    
     res.status(201).json({
-      user: { ...user, verified: true },
+      user: users.public(user),
       token,
-      message: 'Account created and automatically verified!',
+      message: emailSent ? 'Verification email sent' : 'Account created, but verification email failed to send.',
     });
   } catch (err: any) {
-    logger.error(`[Auth/Register] Error: ${err.message}`);
-    res.status(500).json({ error: 'Registration failed' });
+    logger.error(`[Auth/Register] CRITICAL ERROR: ${err.message}`);
+    res.status(500).json({ error: 'Registration failed internal server error' });
   }
 });
 
-// ── POST /api/auth/verify ────────────────────────────────────────────────────
+// ── GET /api/auth/verify-link (Verifikasi lewat Klik Link) ──────────────────
+router.get('/verify-link', async (req: express.Request, res: Response) => {
+  try {
+    const { token } = req.query;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).send('<h1>Link Verifikasi Tidak Valid</h1>');
+    }
+
+    const user = await prisma.user.findFirst({
+      where: { verify_token: token }
+    });
+
+    if (!user) {
+      return res.status(400).send('<h1>Link Verifikasi Kadaluarsa atau Tidak Valid</h1>');
+    }
+
+    await users.update(user.id, {
+      verified: true,
+      verify_token: null,
+    });
+
+    // Redirect ke frontend (dashboard)
+    const frontendUrl = process.env.APP_URL?.replace('/api/auth', '') || 'http://localhost:3000';
+    res.send(`
+      <div style="font-family: sans-serif; text-align: center; padding: 50px;">
+        <h1 style="color: #2563eb;">Email Berhasil Diverifikasi!</h1>
+        <p>Akun kamu sudah aktif. Kamu akan diarahkan kembali ke aplikasi...</p>
+        <script>setTimeout(() => { window.location.href = "${frontendUrl}"; }, 3000);</script>
+      </div>
+    `);
+  } catch (err: any) {
+    logger.error(`[Auth/VerifyLink] Error: ${err.message}`);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+// ── POST /api/auth/verify (Verifikasi lewat Input Kode) ────────────────────
 router.post('/verify', requireAuth, async (req: AuthRequest, res: Response) => {
   try {
     const { code } = req.body;
@@ -68,36 +109,131 @@ router.post('/verify', requireAuth, async (req: AuthRequest, res: Response) => {
     const user = await users.findById(userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    if (user.verify_token !== code) {
-      return res.status(400).json({ error: 'Invalid verification code' });
+    // Cek apakah 6 karakter pertama token cocok dengan kode yang diinput
+    if (user.verify_token && user.verify_token.substring(0, 6).toUpperCase() === code.toUpperCase()) {
+      await users.update(userId, {
+        verified: true,
+        verify_token: null,
+      });
+      return res.json({ ok: true, message: 'Account verified successfully' });
     }
 
-    // Update user as verified
-    await users.update(userId, {
-      verified: true,
-      verify_token: null,
-    });
-
-    res.json({ ok: true, message: 'Account verified successfully' });
+    return res.status(400).json({ error: 'Invalid verification code' });
   } catch (err: any) {
     logger.error(`[Auth/Verify] Error: ${err.message}`);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// ── POST /api/auth/resend-otp ────────────────────────────────────────────────
-router.post('/resend-otp', requireAuth, async (req: AuthRequest, res: Response) => {
+// ── POST /api/auth/verify-email (Lama - untuk kompatibilitas frontend) ──────
+router.post('/verify-email', async (req: express.Request, res: Response) => {
   try {
-    const user = req.user!;
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Token is required' });
 
-    await users.update(user.id, { verify_token: otp });
-    const emailSent = await sendVerificationEmail(user.email, otp);
+    const user = await prisma.user.findFirst({
+      where: { verify_token: token }
+    });
 
-    if (!emailSent) return res.status(500).json({ error: 'Failed to send email' });
-    res.json({ ok: true, message: 'New OTP sent to your email' });
-  } catch (_err: any) {
-    res.status(500).json({ error: 'Failed to resend OTP' });
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    await users.update(user.id, {
+      verified: true,
+      verify_token: null,
+    });
+
+    res.json({ ok: true, message: 'Email verified successfully' });
+  } catch (err: any) {
+    logger.error(`[Auth/VerifyEmail] Error: ${err.message}`);
+    res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// ── POST /api/auth/resend-verification ──────────────────────────────────────
+router.post('/resend-verification', async (req: express.Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    logger.info(`[Auth/ResendVerif] Request for: ${email}`);
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await users.findByEmail(email);
+    if (!user) {
+      return res.json({ ok: true, message: 'If the email exists, a new link has been sent.' });
+    }
+
+    if (user.verified) {
+      return res.status(400).json({ error: 'Email already verified' });
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    await users.update(user.id, { verify_token: verificationToken });
+    
+    const emailSent = await sendVerificationEmail(user.email, verificationToken);
+    if (!emailSent) {
+      logger.error(`[Auth/ResendVerif] Failed to send email to ${user.email}`);
+    } else {
+      logger.info(`[Auth/ResendVerif] Verification email resent to ${user.email}`);
+    }
+    
+    res.json({ ok: true, message: 'Verification link sent' });
+  } catch (err: any) {
+    logger.error(`[Auth/ResendVerification] Error: ${err.message}`);
+    res.status(500).json({ error: 'Failed to resend verification link' });
+  }
+});
+
+// ── POST /api/auth/forgot-password ──────────────────────────────────────────
+router.post('/forgot-password', async (req: express.Request, res: Response) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await users.findByEmail(email);
+    if (!user) {
+      return res.json({ ok: true, message: 'If the email exists, a reset link has been sent.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    await users.update(user.id, { reset_token: resetToken });
+
+    const emailSent = await sendResetPasswordEmail(user.email, resetToken);
+    if (!emailSent) {
+      logger.error(`[Auth/ForgotPassword] Failed to send email to ${user.email}`);
+    }
+    
+    res.json({ ok: true, message: 'Password reset link sent' });
+  } catch (err: any) {
+    logger.error(`[Auth/ForgotPassword] Error: ${err.message}`);
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+// ── POST /api/auth/reset-password ───────────────────────────────────────────
+router.post('/reset-password', async (req: express.Request, res: Response) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+
+    const user = await prisma.user.findFirst({
+      where: { reset_token: token }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    await users.update(user.id, {
+      password_hash: passwordHash,
+      reset_token: null,
+    });
+
+    res.json({ ok: true, message: 'Password has been reset successfully' });
+  } catch (err: any) {
+    logger.error(`[Auth/ResetPassword] Error: ${err.message}`);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
@@ -148,7 +284,6 @@ router.post('/google', async (req: express.Request, res: Response) => {
     const token = req.body.token || req.body.credential || req.body.idToken || req.body.id_token;
 
     if (!token) {
-      logger.warn('[Auth/Google] Login attempt without token');
       return res.status(400).json({ error: 'Google token is required' });
     }
 
@@ -160,7 +295,6 @@ router.post('/google', async (req: express.Request, res: Response) => {
 
     const payload = ticket.getPayload();
     if (!payload) {
-      logger.warn('[Auth/Google] Invalid token payload');
       return res.status(400).json({ error: 'Invalid Google token' });
     }
 
@@ -169,27 +303,19 @@ router.post('/google', async (req: express.Request, res: Response) => {
 
     if (!user) {
       user = await users.create({
-        username:
-          (name || 'user').replace(/\s/g, '_').toLowerCase() + Math.floor(Math.random() * 1000),
+        username: (name || 'user').replace(/\s/g, '_').toLowerCase() + Math.floor(Math.random() * 1000),
         email: email!,
         passwordHash: 'GOOGLE_AUTH',
         avatarUrl: picture || undefined,
       });
-      // Google user otomatis terverifikasi
       await users.update(user.id, { verified: true });
-      logger.info(`[Auth/Google] New user created: ${user.username}`);
-    } else {
-      logger.info(`[Auth/Google] User logged in: ${user.username}`);
     }
 
     const sessionToken = signToken({ userId: user.id });
     res.json({ user: users.public(user), token: sessionToken });
   } catch (err: any) {
-    logger.error(`[Auth/Google] CRITICAL ERROR: ${err.message}`);
-    res.status(500).json({
-      error: 'Google login failed',
-      detail: err.message,
-    });
+    logger.error(`[Auth/Google] Error: ${err.message}`);
+    res.status(500).json({ error: 'Google login failed' });
   }
 });
 

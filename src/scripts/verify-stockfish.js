@@ -13,7 +13,7 @@
  *   Alpine: apk add stockfish   (otomatis di Docker/Railway)
  */
 
-const { getTopMovesFromStockfish, analyzeAccuracy } = require('../src/lib/stockfishAnalysis');
+const { getTopMovesFromStockfish, analyzeAccuracy } = require('../lib/stockfishAnalysis');
 const { spawnSync } = require('child_process');
 
 const TEST_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';

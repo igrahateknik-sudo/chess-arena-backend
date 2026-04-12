@@ -97,10 +97,45 @@ resource "google_cloud_run_v2_service" "backend" {
   }
 }
 
+# 7. Frontend Service (Cloud Run)
+resource "google_cloud_run_v2_service" "frontend" {
+  name     = "chess-frontend"
+  location = "asia-southeast2"
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    containers {
+      image = "asia-southeast2-docker.pkg.dev/project-61a3af43-1cbd-438e-950/chess-arena-repo/chess-frontend:latest"
+      ports { container_port = 3000 }
+      
+      env {
+        name  = "NEXT_PUBLIC_BACKEND_URL"
+        value = google_cloud_run_v2_service.backend.uri
+      }
+      env {
+        name  = "NEXT_PUBLIC_SOCKET_URL"
+        value = google_cloud_run_v2_service.backend.uri
+      }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+    }
+  }
+}
+
 # IAM: Izinkan akses publik (Unauthenticated) ke Backend
-resource "google_cloud_run_v2_service_iam_member" "noauth" {
+resource "google_cloud_run_v2_service_iam_member" "backend_noauth" {
   location = google_cloud_run_v2_service.backend.location
   name     = google_cloud_run_v2_service.backend.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# IAM: Izinkan akses publik (Unauthenticated) ke Frontend
+resource "google_cloud_run_v2_service_iam_member" "frontend_noauth" {
+  location = google_cloud_run_v2_service.frontend.location
+  name     = google_cloud_run_v2_service.frontend.name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
@@ -108,4 +143,8 @@ resource "google_cloud_run_v2_service_iam_member" "noauth" {
 # Outputs
 output "backend_url" {
   value = google_cloud_run_v2_service.backend.uri
+}
+
+output "frontend_url" {
+  value = google_cloud_run_v2_service.frontend.uri
 }
