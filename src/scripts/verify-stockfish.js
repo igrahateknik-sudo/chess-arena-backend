@@ -16,7 +16,7 @@
 const { getTopMovesFromStockfish, analyzeAccuracy } = require('../src/lib/stockfishAnalysis');
 const { spawnSync } = require('child_process');
 
-const TEST_FEN   = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
+const TEST_FEN = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1';
 const TEST_MOVES = [
   { from: 'e2', to: 'e4', timestamp: 1000 },
   { from: 'e7', to: 'e5', timestamp: 3000 },
@@ -69,7 +69,9 @@ async function main() {
   for (const candidate of STOCKFISH_CANDIDATES) {
     try {
       const result = spawnSync(candidate, [], {
-        input: 'quit\n', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'],
+        input: 'quit\n',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       if (result.status === 0 || (result.stdout && result.stdout.length > 0)) {
         stockfishAvailable = true;
@@ -77,7 +79,9 @@ async function main() {
         console.log(`  ✅ Binary ditemukan: ${candidate}`);
         break;
       }
-    } catch { /* coba kandidat berikutnya */ }
+    } catch {
+      /* coba kandidat berikutnya */
+    }
   }
 
   if (!stockfishAvailable) {
@@ -92,7 +96,7 @@ async function main() {
   if (stockfishAvailable) {
     console.log(`\n▶ Test 3: UCI engine communication via spawn (depth 8, timeout 10s)`);
     try {
-      const start  = Date.now();
+      const start = Date.now();
       const result = await getTopMovesFromStockfish(TEST_FEN, 8, 3, 10000);
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
@@ -102,7 +106,9 @@ async function main() {
       } else if (result.timedOut) {
         console.warn(`  ⚠️  Engine timeout setelah ${elapsed}s`);
       } else if (result.bestMove) {
-        console.log(`  ✅ bestMove: ${result.bestMove} | topMoves: [${result.topMoves.join(', ')}] | ${elapsed}s`);
+        console.log(
+          `  ✅ bestMove: ${result.bestMove} | topMoves: [${result.topMoves.join(', ')}] | ${elapsed}s`,
+        );
       } else {
         console.warn('  ⚠️  Tidak ada bestmove yang dikembalikan');
         allPassed = false;
@@ -130,7 +136,7 @@ async function main() {
   }
 }
 
-main().catch(e => {
+main().catch((e) => {
   console.error('Fatal:', e);
   process.exit(1);
 });

@@ -1,0 +1,367 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  username         String      @unique @db.VarChar(30)
+  email            String      @unique @db.VarChar(255)
+  password_hash    String
+  elo              Int?        @default(800)
+  games_played     Int?        @default(0)
+  wins             Int?        @default(0)
+  losses           Int?        @default(0)
+  draws            Int?        @default(0)
+  title            String?     @db.VarChar(5)
+  country          String?     @default("ID") @db.VarChar(3)
+  avatar_url       String?
+  verified         Boolean?    @default(false)
+  verify_token     String?
+  reset_token      String?
+  online           Boolean?    @default(false)
+  socket_id        String?
+  last_ip          String?
+  is_admin         Boolean?    @default(false)
+  trust_score      Int?        @default(100)
+  flagged          Boolean?    @default(false)
+  flagged_reason   String?
+  flagged_at       DateTime?   @db.Timestamptz(6)
+  created_at       DateTime?   @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?   @default(now()) @db.Timestamptz(6)
+
+  wallet           Wallet?
+  transactions     Transaction[]
+  white_games      Game[]      @relation("white_player")
+  black_games      Game[]      @relation("black_player")
+  elo_history      EloHistory[]
+  notifications    Notification[]
+  registrations    TournamentRegistration[]
+  appeals          Appeal[]    @relation("user_appeals")
+  reviewed_appeals Appeal[]    @relation("admin_reviews")
+  anticheat_actions AntiCheatAction[]
+  audit_logs       MoveAuditLog[]
+  fingerprints     DeviceFingerprint[]
+  multi_account_a  MultiAccountFlag[] @relation("user_a")
+  multi_account_b  MultiAccountFlag[] @relation("user_b")
+  collusion_a      CollusionFlag[]    @relation("collusion_a")
+  collusion_b      CollusionFlag[]    @relation("collusion_b")
+  tournaments_created Tournament[] @relation("tournament_creator")
+  tournaments_won     Tournament[] @relation("tournament_winner")
+  security_events  SecurityEvent[]
+
+  @@map("users")
+  @@index([username])
+  @@index([email])
+  @@index([elo(sort: Desc)])
+  @@index([flagged])
+  @@index([trust_score])
+  @@index([is_admin])
+}
+
+model Wallet {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String    @unique @db.Uuid
+  balance    BigInt?   @default(0)
+  locked     BigInt?   @default(0)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("wallets")
+}
+
+model Transaction {
+  id                  String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id             String?   @db.Uuid
+  type                String    @db.VarChar(30)
+  amount              BigInt
+  balance_after       BigInt?
+  status              String?   @default("pending") @db.VarChar(20)
+  description         String?
+  reference           String?   @unique @db.VarChar(100)
+  midtrans_order_id   String?   @unique
+  midtrans_va_number  String?
+  midtrans_payment_type String?
+  midtrans_raw        Json?
+  game_id             String?   @db.Uuid
+  tournament_id       String?   @db.Uuid
+  created_at          DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime? @default(now()) @db.Timestamptz(6)
+  user                User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@map("transactions")
+  @@index([user_id, created_at(sort: Desc)])
+}
+
+model Game {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  white_id        String?   @db.Uuid
+  black_id        String?   @db.Uuid
+  fen             String?   @default("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+  pgn             String?   @default("")
+  move_history    Json?     @default("[]")
+  status          String?   @default("active") @db.VarChar(20)
+  winner          String?   @db.VarChar(10)
+  end_reason      String?   @db.VarChar(30)
+  time_control    Json
+  stakes          BigInt?   @default(0)
+  white_elo_before Int?
+  black_elo_before Int?
+  white_elo_after  Int?
+  black_elo_after  Int?
+  white_time_left  Int?
+  black_time_left  Int?
+  started_at      DateTime? @default(now()) @db.Timestamptz(6)
+  ended_at        DateTime? @db.Timestamptz(6)
+  anticheat_flags Json?     @default("[]")
+
+  white_player    User?     @relation("white_player", fields: [white_id], references: [id], onDelete: SetNull)
+  black_player    User?     @relation("black_player", fields: [black_id], references: [id], onDelete: SetNull)
+  elo_history     EloHistory[]
+  audit_logs      MoveAuditLog[]
+  anticheat_actions AntiCheatAction[]
+  fingerprints    DeviceFingerprint[]
+  collusion_flags CollusionFlag[]
+  tournament_games TournamentGame[]
+
+  @@map("games")
+  @@index([white_id, black_id])
+  @@index([status])
+}
+
+model Tournament {
+  id                 String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name               String    @db.VarChar(100)
+  description        String?
+  format             String    @db.VarChar(20)
+  time_control       Json
+  prize_pool         BigInt?   @default(0)
+  prize_distribution Json?     @default("[50,30,20]")
+  entry_fee          BigInt?   @default(0)
+  max_players        Int?      @default(64)
+  min_elo            Int?      @default(0)
+  max_elo            Int?      @default(9999)
+  status             String?   @default("upcoming") @db.VarChar(20)
+  starts_at          DateTime  @db.Timestamptz(6)
+  ends_at            DateTime? @db.Timestamptz(6)
+  winner_id          String?   @db.Uuid
+  created_by         String?   @db.Uuid
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+
+  winner             User?     @relation("tournament_winner", fields: [winner_id], references: [id])
+  creator            User?     @relation("tournament_creator", fields: [created_by], references: [id])
+  registrations      TournamentRegistration[]
+  tournament_games   TournamentGame[]
+
+  @@map("tournaments")
+}
+
+model TournamentRegistration {
+  id             String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tournament_id  String    @db.Uuid
+  user_id        String    @db.Uuid
+  paid           Boolean?  @default(false)
+  score          Decimal?  @default(0) @db.Decimal(5, 1)
+  registered_at  DateTime? @default(now()) @db.Timestamptz(6)
+
+  tournament     Tournament @relation(fields: [tournament_id], references: [id], onDelete: Cascade)
+  user           User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([tournament_id, user_id])
+  @@map("tournament_registrations")
+}
+
+model TournamentGame {
+  id             String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tournament_id  String?   @db.Uuid
+  game_id        String?   @db.Uuid
+  round          Int?
+  board          Int?
+
+  tournament     Tournament? @relation(fields: [tournament_id], references: [id])
+  game           Game?       @relation(fields: [game_id], references: [id])
+
+  @@map("tournament_games")
+}
+
+model EloHistory {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String    @db.Uuid
+  elo_before  Int?
+  elo_after   Int?
+  change      Int?
+  game_id     String?   @db.Uuid
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  game        Game?     @relation(fields: [game_id], references: [id])
+
+  @@map("elo_history")
+  @@index([user_id, created_at(sort: Desc)])
+}
+
+model Notification {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id     String    @db.Uuid
+  type        String?   @db.VarChar(30)
+  title       String?
+  body        String?
+  read        Boolean?  @default(false)
+  data        Json?
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+
+  user        User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model MoveAuditLog {
+  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  game_id       String?   @db.Uuid
+  user_id       String?   @db.Uuid
+  move_seq      Int
+  san           String?
+  from_sq       String?
+  to_sq         String?
+  fen_after     String?
+  time_taken_ms Int?
+  time_left     Int?
+  server_ts     BigInt?
+  created_at    DateTime? @default(now()) @db.Timestamptz(6)
+
+  game          Game?     @relation(fields: [game_id], references: [id], onDelete: SetNull)
+  user          User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@map("move_audit_log")
+  @@index([game_id])
+  @@index([user_id])
+  @@index([game_id, move_seq])
+  @@index([created_at(sort: Desc)])
+}
+
+model AntiCheatAction {
+  id         String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id    String?   @db.Uuid
+  game_id    String?   @db.Uuid
+  action     String    @db.VarChar(20)
+  reason     String?
+  flags      String?
+  score      Int?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  user       User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  game       Game?     @relation(fields: [game_id], references: [id], onDelete: SetNull)
+
+  @@map("anticheat_actions")
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([action])
+}
+
+model DeviceFingerprint {
+  id               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id          String    @db.Uuid
+  fingerprint_hash String
+  ip_hash          String
+  ua_hash          String
+  game_id          String?   @db.Uuid
+  seen_at          DateTime? @default(now()) @db.Timestamptz(6)
+
+  user             User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  game             Game?     @relation(fields: [game_id], references: [id], onDelete: SetNull)
+
+  @@unique([user_id, fingerprint_hash])
+  @@map("device_fingerprints")
+  @@index([fingerprint_hash])
+  @@index([user_id])
+  @@index([seen_at(sort: Desc)])
+}
+
+model MultiAccountFlag {
+  id               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id_a        String    @db.Uuid
+  user_id_b        String    @db.Uuid
+  fingerprint_hash String
+  detected_at      DateTime? @default(now()) @db.Timestamptz(6)
+  reviewed         Boolean?  @default(false)
+  review_note      String?
+  verdict          String?   @db.VarChar(20)
+  reviewed_at      DateTime? @db.Timestamptz(6)
+  reviewed_by      String?   @db.Uuid
+
+  user_a           User      @relation("user_a", fields: [user_id_a], references: [id], onDelete: Cascade)
+  user_b           User      @relation("user_b", fields: [user_id_b], references: [id], onDelete: Cascade)
+
+  @@unique([user_id_a, user_id_b, fingerprint_hash])
+  @@map("multi_account_flags")
+  @@index([user_id_a])
+  @@index([user_id_b])
+  @@index([reviewed])
+}
+
+model CollusionFlag {
+  id            String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  game_id       String?   @db.Uuid
+  user_id_a     String    @db.Uuid
+  user_id_b     String    @db.Uuid
+  pair_flags    String?
+  gift_flags    String?
+  pair_score    Int?      @default(0)
+  pair_stats    String?
+  detected_at   DateTime? @default(now()) @db.Timestamptz(6)
+  reviewed      Boolean?  @default(false)
+  review_note   String?
+  verdict       String?   @db.VarChar(20)
+  reviewed_at   DateTime? @db.Timestamptz(6)
+  reviewed_by   String?   @db.Uuid
+
+  game          Game?     @relation(fields: [game_id], references: [id], onDelete: SetNull)
+  user_a        User      @relation("collusion_a", fields: [user_id_a], references: [id], onDelete: Cascade)
+  user_b        User      @relation("collusion_b", fields: [user_id_b], references: [id], onDelete: Cascade)
+
+  @@map("collusion_flags")
+  @@index([user_id_a])
+  @@index([user_id_b])
+  @@index([reviewed])
+  @@index([detected_at(sort: Desc)])
+}
+
+model Appeal {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  user_id         String    @db.Uuid
+  reason          String
+  evidence        String?
+  status          String?   @default("pending") @db.VarChar(20)
+  flag_reason_at  String?
+  trust_at        Int?
+  admin_note      String?
+  reviewed_by     String?   @db.Uuid
+  reviewed_at     DateTime? @db.Timestamptz(6)
+  created_at      DateTime? @default(now()) @db.Timestamptz(6)
+
+  user            User      @relation("user_appeals", fields: [user_id], references: [id], onDelete: Cascade)
+  admin           User?     @relation("admin_reviews", fields: [reviewed_by], references: [id], onDelete: SetNull)
+
+  @@map("appeals")
+  @@index([user_id])
+  @@index([status])
+  @@index([created_at(sort: Desc)])
+}
+
+model SecurityEvent {
+  id          String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  event_type  String    @db.VarChar(60)
+  user_id     String?   @db.Uuid
+  details     String?
+  created_at  DateTime? @default(now()) @db.Timestamptz(6)
+
+  user        User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+
+  @@map("security_events")
+  @@index([event_type])
+  @@index([user_id])
+  @@index([created_at(sort: Desc)])
+}

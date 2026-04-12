@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+.npm/
+
+# IDE and System Files
+.vscode/
+.codeoss/
+.config/
+.DS_Store
+.bash_history
+.lesshst
+.sudo_as_admin_successful
+.ssh/
+.gitconfig
+.git-credentials
+.local/
+
+# Local Environment and Secrets
+.env
+.env.*
+env.yaml
+!env.yaml.example
+
+# Build and Temp
+dist/
+build/
+*.log
+dump.rdb
+nodemon
+cloud-sql-proxy
+
+# Terraform
+.terraform/
+terraform.tfstate*
+.terraform.lock.hcl
+
+# Prisma
+/prisma/migrations/
+/src/generated/prisma
+
+# Tools/CLI specific
+.gemini/
+.claude/
+.claude.json
+.gsutil/
+.docker/
+.cache/
+
+# Project Specific
+chess-arena-backend@1.0.0
+README-cloudshell.txt

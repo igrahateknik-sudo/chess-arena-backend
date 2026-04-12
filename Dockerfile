@@ -1,24 +1,51 @@
-# Gunakan image Node.js yang ringan
-FROM node:20-slim
+# --- STAGE 1: Build ---
+FROM node:20-slim AS builder
 
-# Tentukan direktori kerja
 WORKDIR /app
 
-# Copy package.json dan package-lock.json (untuk caching)
+# Copy configuration files
+COPY package*.json ./
+COPY tsconfig.json ./
+COPY prisma ./prisma/
+
+# Install dependencies (termasuk devDependencies untuk tsc)
+RUN npm install
+
+# Copy source code
+COPY src ./src/
+
+# Generate Prisma Client & Build TypeScript
+RUN npx prisma generate
+RUN npm run build
+
+# --- STAGE 2: Production ---
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install Stockfish
+RUN apt-get update && apt-get install -y stockfish && rm -rf /var/lib/apt/lists/*
+
+# Copy package files
 COPY package*.json ./
 
-# Install dependensi (hanya production)
+# Install only production dependencies
 RUN npm install --omit=dev
 
-# Copy semua kode sumber aplikasi
-COPY . .
+# Copy built files from builder stage
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+COPY prisma ./prisma/
 
-# Berikan hak akses (opsional tapi bagus untuk Cloud Run)
-RUN chown -R node:node /app
+# Create logs directory
+RUN mkdir logs && chown -R node:node /app
+
 USER node
 
-# Expose port yang digunakan Cloud Run (default: 8080)
 EXPOSE 8080
 
-# Jalankan perintah start dari package.json
+# Environment variable default (akan di-override oleh Cloud Run)
+ENV NODE_ENV=production
+
 CMD [ "npm", "start" ]
